@@ -7,6 +7,9 @@ import os
 import sqlite3
 import time
 import unicodedata
+import time
+
+start_time = time.time()
 
 # CONST
 MPG_CALENDARS = 'http://www.monpetitgazon.com/calendrier-resultat-championnat.php?num=%d'
@@ -116,7 +119,7 @@ def loadGames():
 
                         familyName = clean_name(player.findChildren()[-1].text)
                         if familyName: # possibly a substitute so empty
-                            c.execute('SELECT id FROM player WHERE familyName = ? OR firstName || \' \' || familyName = ? AND team = ? ORDER BY transfertFee DESC;', (familyName, familyName, team))
+                            c.execute('SELECT id FROM player WHERE (familyName = ? OR firstName || \' \' || familyName = ?) AND (team = ?) ORDER BY transfertFee DESC;', (familyName, familyName, team))
                             result = c.fetchone()
                             if result:
                                 playerId = result[0]
@@ -143,3 +146,5 @@ conn.commit()
 # We can also close the connection if we are done with it.
 # Just be sure any changes have been committed or they will be lost.
 conn.close()
+
+print("--- %s seconds ---" % (time.time() - start_time))
