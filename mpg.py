@@ -21,6 +21,8 @@ CURRENT_DIRECTORY = os.getcwd()
 PLAYERS_FILE_PATH = os.path.join(CURRENT_DIRECTORY, 'players.html')
 LOG_FILE_PLAYER_NOT_FOUND = 'players-not-found.txt'
 
+teamsComingGames = {}
+
 # DB
 try:
     os.remove(DB_FILE)
@@ -46,6 +48,9 @@ c.execute('''CREATE TABLE goal
 
 c.execute('''CREATE TABLE mark
              (player TEXT, substitute INTEGER DEFAULT 0, game INTEGER, mark INTEGER, FOREIGN KEY(player) REFERENCES player(id), FOREIGN KEY(game) REFERENCES game(id))''')
+
+c.execute('''CREATE TABLE calendar
+             (team TEXT, coming TEXT)''')
 
 def install(package):
     pip.main(['install', package])
@@ -78,64 +83,85 @@ def loadPlayers():
 
         c.execute('INSERT INTO player (position, familyName, firstName, team, transfertFee) VALUES (?, ?, ?, ?, ?)', (position, familyName, firstName, team, transfertFee))
 
+def loadGameDetails(gameDetailsUrl, gameDay):
+    gameDetailsHtml = urlopen(BASE_URL + gameDetailsUrl)
+    soup = BeautifulSoup(gameDetailsHtml, 'html.parser')
+
+    featuredEvent = soup.find('div', class_='featured-event')
+    gameLabel = featuredEvent.find('h2').text
+    teamPattern = re.compile('([A-Za-z]+\-?[A-Za-z]+)')
+    teams = teamPattern.findall(gameLabel)
+    scorePattern = re.compile('(\d)')
+    scores = scorePattern.findall(gameLabel)
+
+    homeTeam = teams[0]
+    homeScore = scores[0]
+    awayScore = scores[1]
+    awayTeam = teams[1]
+    print("Game %s" % gameLabel)
+
+    c.execute('INSERT INTO game (gameLabel, gameDay, awayTeam, homeTeam, homeScore, awayScore) VALUES (?, ?, ?, ?, ?, ?)', (gameLabel, gameDay, awayTeam, homeTeam, homeScore, awayScore))
+    gameId = c.lastrowid
+
+    wayClasses = ['teamhome', 'teamaway']
+
+    for idx, wayClasse in enumerate(wayClasses):
+
+        for blockIndex in range(0, 2):
+            playersElements = soup.findAll('div', class_=wayClasse)[blockIndex].findAll('div', class_='joueur')
+
+            for player in playersElements:
+                team = homeTeam if idx == 0 else awayTeam
+
+                familyName = clean_name(player.findChildren()[-1].text)
+                if familyName: # possibly a substitute so empty
+                    c.execute('SELECT id FROM player WHERE (familyName = ? OR firstName || \' \' || familyName = ?) AND (team = ?) ORDER BY transfertFee DESC;', (familyName, familyName, team))
+                    result = c.fetchone()
+                    if result:
+                        playerId = result[0]
+
+                        mark = player.find('div', class_='note').find('p').text
+                        c.execute('INSERT INTO mark (player, game, mark, substitute) VALUES (?, ?, ?, ?)', (playerId, gameId, mark, blockIndex))
+
+                        goalsBlock = player.find('div', class_='but').findAll('img')
+                        goals = len(goalsBlock) if goalsBlock else 0
+                        mark = player.find('div', class_='note').find('p').text
+
+                        for i in range(0, goals):
+                            c.execute('INSERT INTO goal (scorer, game) VALUES (?, ?)', (playerId, gameId))
+                    else:
+                        with open(LOG_FILE_PLAYER_NOT_FOUND, 'a') as myfile:
+                            myfile.write('Player not found %s %s\n' % (familyName, team))
+
+def addTeamToComingGames(team1, team2):
+    if team1 in teamsComingGames.keys():
+        teamsComingGames[team1].append(team2[:3])
+    else:
+        print('new team %s' % team1)
+        teamsComingGames[team1] = [team2[:3]]
+
 def loadGames():
     print("Load Games")
     for gameDay in range(1, NUMBER_OF_GAMES + 1):
         print("Championship day %d" % gameDay)
         mpgCalendarsHtml = urlopen(MPG_CALENDARS % gameDay)
         soup = BeautifulSoup(mpgCalendarsHtml, 'html.parser')
-        detailsGamesLinks = soup.findAll('a', href = re.compile(DETAILS_URL + '.*'))
 
-        for link in detailsGamesLinks:
-            gameDetailsUrl = link.get('href')
-            gameDetailsHtml = urlopen(BASE_URL + gameDetailsUrl)
-            soup = BeautifulSoup(gameDetailsHtml, 'html.parser')
+        gamesElements = soup.find('div', id = 'tabResultat').findAll('tr')
+        for index in range(1, 11):
+            link = gamesElements[index].find('a', href = re.compile(DETAILS_URL + '.*'))
+            if link:
+                gameDetailsUrl = link.get('href')
+                loadGameDetails(gameDetailsUrl, gameDay)
+            else:
+                homeTeam = gamesElements[index].find('td', class_ = 'equipeDom').find('b').text
+                awayTeam = gamesElements[index].find('td', class_ = 'equipeExt').find('b').text
+                addTeamToComingGames(homeTeam, awayTeam)
+                addTeamToComingGames(awayTeam, homeTeam)
 
-            featuredEvent = soup.find('div', class_='featured-event')
-            gameLabel = featuredEvent.find('h2').text
-            teamPattern = re.compile('([A-Za-z]+\-?[A-Za-z]+)')
-            teams = teamPattern.findall(gameLabel)
-            scorePattern = re.compile('(\d)')
-            scores = scorePattern.findall(gameLabel)
+    for team, coming in teamsComingGames.items():
+        c.execute('INSERT INTO calendar (team, coming) VALUES (?, ?)', (team, ', '.join(coming)))
 
-            homeTeam = teams[0]
-            homeScore = scores[0]
-            awayScore = scores[1]
-            awayTeam = teams[1]
-            print("Game %s" % gameLabel)
-
-            c.execute('INSERT INTO game (gameLabel, gameDay, awayTeam, homeTeam, homeScore, awayScore) VALUES (?, ?, ?, ?, ?, ?)', (gameLabel, gameDay, awayTeam, homeTeam, homeScore, awayScore))
-            gameId = c.lastrowid
-
-            wayClasses = ['teamhome', 'teamaway']
-
-            for idx, wayClasse in enumerate(wayClasses):
-
-                for blockIndex in range(0, 2):
-                    playersElements = soup.findAll('div', class_=wayClasse)[blockIndex].findAll('div', class_='joueur')
-
-                    for player in playersElements:
-                        team = homeTeam if idx == 0 else awayTeam
-
-                        familyName = clean_name(player.findChildren()[-1].text)
-                        if familyName: # possibly a substitute so empty
-                            c.execute('SELECT id FROM player WHERE (familyName = ? OR firstName || \' \' || familyName = ?) AND (team = ?) ORDER BY transfertFee DESC;', (familyName, familyName, team))
-                            result = c.fetchone()
-                            if result:
-                                playerId = result[0]
-
-                                mark = player.find('div', class_='note').find('p').text
-                                c.execute('INSERT INTO mark (player, game, mark, substitute) VALUES (?, ?, ?, ?)', (playerId, gameId, mark, blockIndex))
-
-                                goalsBlock = player.find('div', class_='but').findAll('img')
-                                goals = len(goalsBlock) if goalsBlock else 0
-                                mark = player.find('div', class_='note').find('p').text
-
-                                for i in range(0, goals):
-                                    c.execute('INSERT INTO goal (scorer, game) VALUES (?, ?)', (playerId, gameId))
-                            else:
-                                with open(LOG_FILE_PLAYER_NOT_FOUND, 'a') as myfile:
-                                    myfile.write('Player not found %s %s\n' % (familyName, team))
 
 loadPlayers()
 loadGames()
